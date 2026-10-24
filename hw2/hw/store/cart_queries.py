@@ -1,65 +1,104 @@
+
 from typing import Iterable
 
+from sqlalchemy import select
+
+from .database import SessionLocal
 from .models import CartEntity, CartInfo
-
-
-_data: dict[int, CartInfo] = {}
-
-
-def int_id_generator() -> Iterable[int]:
-    i = 0
-
-    while True:
-        yield i
-        i += 1
-
-
-_id_generator = int_id_generator()
+from .orm_models import CartItemOrm, CartOrm
 
 
 def add_cart() -> CartEntity:
-    cart_id = next(_id_generator)
+    with SessionLocal.begin() as session:
+        cart = CartOrm()
 
-    info = CartInfo()
+        session.add(cart)
+        session.flush()
 
-    _data[cart_id] = info
-
-    return CartEntity(
-        id=cart_id,
-        info=info,
-    )
-
-
-def get_cart(cart_id: int) -> CartEntity | None:
-    if cart_id not in _data:
-        return None
-
-    return CartEntity(
-        id=cart_id,
-        info=_data[cart_id],
-    )
-
-
-def get_all_carts() -> Iterable[CartEntity]:
-    for cart_id, info in _data.items():
-        yield CartEntity(
-            id=cart_id,
-            info=info,
+        return CartEntity(
+            id=cart.id,
+            info=CartInfo(),
         )
 
 
+def get_cart(cart_id: int) -> CartEntity | None:
+    with SessionLocal() as session:
+        cart = session.get(CartOrm, cart_id)
+
+        if cart is None:
+            return None
+
+        rows = session.scalars(
+            select(CartItemOrm).where(
+                CartItemOrm.cart_id == cart_id
+            )
+        ).all()
+
+        items = {
+            row.item_id: row.quantity
+            for row in rows
+        }
+
+        return CartEntity(
+            id=cart.id,
+            info=CartInfo(items=items),
+        )
+
+
+def get_all_carts() -> Iterable[CartEntity]:
+    with SessionLocal() as session:
+        cart_ids = session.scalars(
+            select(CartOrm.id).order_by(CartOrm.id)
+        ).all()
+
+        rows = session.scalars(
+            select(CartItemOrm)
+        ).all()
+
+        items_by_cart = {
+            cart_id: {}
+            for cart_id in cart_ids
+        }
+
+        for row in rows:
+            items_by_cart[row.cart_id][row.item_id] = (
+                row.quantity
+            )
+
+        return [
+            CartEntity(
+                id=cart_id,
+                info=CartInfo(
+                    items=items_by_cart[cart_id]
+                ),
+            )
+            for cart_id in cart_ids
+        ]
+
+
 def add_item_to_cart(
-    cart_id: int,
-    item_id: int,
+        cart_id: int,
+        item_id: int,
 ) -> bool:
-    if cart_id not in _data:
-        return False
+    with SessionLocal.begin() as session:
+        cart = session.get(CartOrm, cart_id)
 
-    items = _data[cart_id].items
+        if cart is None:
+            return False
 
-    if item_id in items:
-        items[item_id] += 1
-    else:
-        items[item_id] = 1
+        cart_item = session.get(
+            CartItemOrm,
+            (cart_id, item_id),
+        )
 
-    return True
+        if cart_item is None:
+            cart_item = CartItemOrm(
+                cart_id=cart_id,
+                item_id=item_id,
+                quantity=1,
+            )
+            session.add(cart_item)
+        else:
+            cart_item.quantity += 1
+
+        return True

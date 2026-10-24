@@ -1,109 +1,116 @@
-from typing import Iterable
 
+from sqlalchemy import select
+
+from .database import SessionLocal
 from .models import ItemEntity, ItemInfo, PatchItemInfo
+from .orm_models import ItemOrm
 
 
-_data: dict[int, ItemInfo] = {}
-
-
-def int_id_generator() -> Iterable[int]:
-    i = 0
-
-    while True:
-        yield i
-        i += 1
-
-
-_id_generator = int_id_generator()
+def to_entity(item: ItemOrm) -> ItemEntity:
+    return ItemEntity(
+        id=item.id,
+        info=ItemInfo(
+            name=item.name,
+            price=float(item.price),
+            deleted=item.deleted,
+        ),
+    )
 
 
 def add(info: ItemInfo) -> ItemEntity:
-    item_id = next(_id_generator)
+    with SessionLocal.begin() as session:
+        item = ItemOrm(
+            name=info.name,
+            price=info.price,
+            deleted=info.deleted,
+        )
 
-    _data[item_id] = info
+        session.add(item)
+        session.flush()
 
-    return ItemEntity(
-        id=item_id,
-        info=info,
-    )
+        return to_entity(item)
 
 
 def get_one(id: int) -> ItemEntity | None:
-    if id not in _data:
-        return None
+    with SessionLocal() as session:
+        item = session.get(ItemOrm, id)
 
-    return ItemEntity(
-        id=id,
-        info=_data[id],
-    )
+        if item is None:
+            return None
+
+        return to_entity(item)
 
 
 def get_many(
-    offset: int = 0,
-    limit: int = 10,
-    min_price: float | None = None,
-    max_price: float | None = None,
-    show_deleted: bool = False,
+        offset: int = 0,
+        limit: int = 10,
+        min_price: float | None = None,
+        max_price: float | None = None,
+        show_deleted: bool = False,
 ) -> list[ItemEntity]:
-    result: list[ItemEntity] = []
+    with SessionLocal() as session:
+        query = select(ItemOrm)
 
-    for item_id, info in _data.items():
-        if not show_deleted and info.deleted:
-            continue
+        if not show_deleted:
+            query = query.where(ItemOrm.deleted.is_(False))
 
-        if min_price is not None and info.price < min_price:
-            continue
+        if min_price is not None:
+            query = query.where(ItemOrm.price >= min_price)
 
-        if max_price is not None and info.price > max_price:
-            continue
+        if max_price is not None:
+            query = query.where(ItemOrm.price <= max_price)
 
-        result.append(
-            ItemEntity(
-                id=item_id,
-                info=info,
-            )
+        query = (
+            query.order_by(ItemOrm.id)
+            .offset(offset)
+            .limit(limit)
         )
 
-    return result[offset : offset + limit]
+        items = session.scalars(query).all()
+
+        return [to_entity(item) for item in items]
 
 
-def update(
-    id: int,
-    info: ItemInfo,
-) -> ItemEntity | None:
-    if id not in _data:
-        return None
+def update(id: int, info: ItemInfo) -> ItemEntity | None:
+    with SessionLocal.begin() as session:
+        item = session.get(ItemOrm, id)
 
-    _data[id] = info
+        if item is None:
+            return None
 
-    return ItemEntity(
-        id=id,
-        info=info,
-    )
+        item.name = info.name
+        item.price = info.price
+        item.deleted = info.deleted
+
+        session.flush()
+
+        return to_entity(item)
 
 
 def patch(
-    id: int,
-    patch_info: PatchItemInfo,
+        id: int,
+        patch_info: PatchItemInfo,
 ) -> ItemEntity | None:
-    if id not in _data:
-        return None
+    with SessionLocal.begin() as session:
+        item = session.get(ItemOrm, id)
 
-    if _data[id].deleted:
-        return None
+        if item is None or item.deleted:
+            return None
 
-    if patch_info.name is not None:
-        _data[id].name = patch_info.name
+        if patch_info.name is not None:
+            item.name = patch_info.name
 
-    if patch_info.price is not None:
-        _data[id].price = patch_info.price
+        if patch_info.price is not None:
+            item.price = patch_info.price
 
-    return ItemEntity(
-        id=id,
-        info=_data[id],
-    )
+        session.flush()
+
+        return to_entity(item)
 
 
 def delete(id: int) -> None:
-    if id in _data:
-        _data[id].deleted = True
+    with SessionLocal.begin() as session:
+        item = session.get(ItemOrm, id)
+
+        if item is not None:
+            item.deleted = True
